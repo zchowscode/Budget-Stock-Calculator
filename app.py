@@ -1,13 +1,15 @@
 from flask import Flask, render_template, jsonify, request
 from flask_cors import CORS
-import yfinance as yf
 import numpy as np
 import os
 import time
 import threading
+import requests
 
 app = Flask(__name__)
 CORS(app)
+
+API_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "")
 
 TICKERS = [
     "F", "T", "VZ", "INTC", "BAC", "AMD", "CSCO",
@@ -19,20 +21,48 @@ _cache = {"data": None, "ts": 0, "ready": False}
 _lock = threading.Lock()
 
 
+def fetch_ticker(ticker):
+    """Fetch daily closes for one ticker from Alpha Vantage."""
+    try:
+        url = "https://www.alphavantage.co/query"
+        params = {
+            "function": "TIME_SERIES_DAILY",
+            "symbol": ticker,
+            "outputsize": "compact",  # last 100 days
+            "apikey": API_KEY,
+        }
+        r = requests.get(url, params=params, timeout=15)
+        j = r.json()
+
+        ts = j.get("Time Series (Daily)", {})
+        if not ts:
+            print(f"[cache] no data for {ticker}: {list(j.keys())}", flush=True)
+            return None
+
+        # Sort by date ascending, take last 65 days
+        dates = sorted(ts.keys())[-65:]
+        closes = np.array([float(ts[d]["4. close"]) for d in dates], dtype="float32")
+        return closes
+    except Exception as e:
+        print(f"[cache] error {ticker}: {e}", flush=True)
+        return None
+
+
 def fetch_all():
+    """Fetch all tickers in background. Alpha Vantage free = 25 req/day, 5/min."""
     data = {}
-    for ticker in TICKERS:
-        try:
-            t = yf.Ticker(ticker)
-            hist = t.history(period="3mo", interval="1d", auto_adjust=True)
-            if hist.empty or len(hist) < 20:
-                continue
-            closes = hist["Close"].values.astype("float32")
+    for i, ticker in enumerate(TICKERS):
+        closes = fetch_ticker(ticker)
+        if closes is not None and len(closes) >= 20:
             data[ticker] = closes
-            print(f"[cache] got {ticker}", flush=True)
-        except Exception as e:
-            print(f"[cache] skipped {ticker}: {e}", flush=True)
-        time.sleep(0.5)
+            print(f"[cache] got {ticker} ({len(closes)} days)", flush=True)
+        else:
+            print(f"[cache] skipped {ticker}", flush=True)
+
+        # Alpha Vantage free tier: max 5 requests/minute
+        # Sleep 13s between each to stay safe
+        if i < len(TICKERS) - 1:
+            time.sleep(13)
 
     with _lock:
         if data:
@@ -41,7 +71,7 @@ def fetch_all():
             _cache["ready"] = True
             print(f"[cache] loaded {len(data)} tickers", flush=True)
         else:
-            print("[cache] no data fetched — will retry on next request", flush=True)
+            print("[cache] no data fetched", flush=True)
 
 
 def maybe_refresh():
@@ -52,7 +82,7 @@ def maybe_refresh():
         threading.Thread(target=fetch_all, daemon=True).start()
 
 
-# Start fetching immediately at startup
+# Start fetching at startup
 threading.Thread(target=fetch_all, daemon=True).start()
 
 
