@@ -55,7 +55,7 @@ def fetch_all():
             print(f"[cache] got {ticker} ({len(closes)} days)", flush=True)
         else:
             print(f"[cache] skipped {ticker}", flush=True)
-        time.sleep(0.3)  # gentle pacing
+        time.sleep(13)  # Polygon free tier = 5 req/min
 
     with _lock:
         if data:
