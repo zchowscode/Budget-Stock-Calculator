@@ -5,6 +5,7 @@ import os
 import time
 import threading
 import requests
+from datetime import date, timedelta
 
 app = Flask(__name__)
 CORS(app)
@@ -21,47 +22,53 @@ _lock = threading.Lock()
 _fetching = False
 
 
-def fetch_ticker(ticker):
-    try:
-        from datetime import date, timedelta
-        end = date.today().isoformat()
-        start = (date.today() - timedelta(days=100)).isoformat()
-        url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
-        params = {"adjusted": "true", "sort": "asc", "limit": 65, "apiKey": API_KEY}
-        print(f"[fetch] requesting {ticker}...", flush=True)
-        r = requests.get(url, params=params, timeout=15)
-        print(f"[fetch] {ticker} status={r.status_code}", flush=True)
-        j = r.json()
-        results = j.get("results", [])
-        if not results:
-            print(f"[cache] no data for {ticker}: {j}", flush=True)
+def fetch_ticker(ticker, retries=3):
+    end = date.today().isoformat()
+    start = (date.today() - timedelta(days=100)).isoformat()
+    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
+    params = {"adjusted": "true", "sort": "asc", "limit": 65, "apiKey": API_KEY}
+
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, params=params, timeout=15)
+            j = r.json()
+            results = j.get("results", [])
+            if results and len(results) >= 20:
+                return np.array([float(bar["c"]) for bar in results], dtype="float32")
+            # Rate limited — wait and retry
+            if "exceeded" in str(j).lower() or r.status_code == 429:
+                print(f"[cache] rate limited on {ticker}, waiting 60s...", flush=True)
+                time.sleep(60)
+                continue
+            print(f"[cache] no data for {ticker}: {j.get('status','')}", flush=True)
             return None
-        return np.array([float(bar["c"]) for bar in results], dtype="float32")
-    except Exception as e:
-        print(f"[cache] error {ticker}: {e}", flush=True)
-        return None
+        except Exception as e:
+            print(f"[cache] error {ticker}: {e}", flush=True)
+            return None
+    return None
 
 
 def fetch_all():
     global _fetching
-    print("[cache] fetch_all started", flush=True)
-    print(f"[cache] API_KEY set: {bool(API_KEY)}", flush=True)
     with _lock:
         if _fetching:
             print("[cache] already fetching, skipping", flush=True)
             return
         _fetching = True
 
+    print(f"[cache] starting fetch for {len(TICKERS)} tickers", flush=True)
     try:
         data = {}
-        for ticker in TICKERS:
+        for i, ticker in enumerate(TICKERS):
             closes = fetch_ticker(ticker)
-            if closes is not None and len(closes) >= 20:
+            if closes is not None:
                 data[ticker] = closes
                 print(f"[cache] got {ticker} ({len(closes)} days)", flush=True)
             else:
                 print(f"[cache] skipped {ticker}", flush=True)
-            time.sleep(13)
+            # Only sleep between requests, not after the last one
+            if i < len(TICKERS) - 1:
+                time.sleep(13)
 
         with _lock:
             if data:
@@ -71,8 +78,6 @@ def fetch_all():
                 print(f"[cache] loaded {len(data)} tickers", flush=True)
             else:
                 print("[cache] no data fetched", flush=True)
-    except Exception as e:
-        print(f"[cache] fetch_all crashed: {e}", flush=True)
     finally:
         with _lock:
             _fetching = False
