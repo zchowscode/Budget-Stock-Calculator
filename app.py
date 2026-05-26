@@ -9,7 +9,6 @@ import threading
 app = Flask(__name__)
 CORS(app)
 
-# Fewer tickers = faster load, still covers a good range of price points
 TICKERS = [
     "F", "T", "VZ", "INTC", "BAC", "AMD", "CSCO",
     "KO", "PEP", "WMT", "NKE", "SBUX", "DIS",
@@ -21,27 +20,19 @@ _lock = threading.Lock()
 
 
 def fetch_all():
-    """Fetch tickers in background and populate cache."""
-    # Set a browser-like User-Agent so Yahoo Finance doesn't block us
-    yf.utils.get_json.__globals__.get('requests', __import__('requests'))
-    import requests
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    })
-
     data = {}
     for ticker in TICKERS:
         try:
-            t = yf.Ticker(ticker, session=session)
+            t = yf.Ticker(ticker)
             hist = t.history(period="3mo", interval="1d", auto_adjust=True)
             if hist.empty or len(hist) < 20:
                 continue
             closes = hist["Close"].values.astype("float32")
             data[ticker] = closes
-        except Exception:
-            continue
-        time.sleep(0.3)  # gentle pacing to avoid rate limits
+            print(f"[cache] got {ticker}", flush=True)
+        except Exception as e:
+            print(f"[cache] skipped {ticker}: {e}", flush=True)
+        time.sleep(0.5)
 
     with _lock:
         if data:
@@ -54,21 +45,18 @@ def fetch_all():
 
 
 def maybe_refresh():
-    """Trigger background refresh if cache is stale (>1 hour)."""
-    now = time.time()
     with _lock:
-        age = now - _cache["ts"]
+        age = time.time() - _cache["ts"]
         ready = _cache["ready"]
     if not ready or age > 3600:
-        t = threading.Thread(target=fetch_all, daemon=True)
-        t.start()
+        threading.Thread(target=fetch_all, daemon=True).start()
 
 
-# Kick off background fetch immediately at startup
+# Start fetching immediately at startup
 threading.Thread(target=fetch_all, daemon=True).start()
 
 
-def score_stocks(data: dict, budget: float) -> list[dict]:
+def score_stocks(data: dict, budget: float) -> list:
     results = []
     for ticker, prices in data.items():
         if len(prices) < 20:
@@ -108,6 +96,22 @@ def score_stocks(data: dict, budget: float) -> list[dict]:
     return results[:10]
 
 
+def demo_stocks(budget: float) -> list:
+    raw = [
+        {"ticker": "F",    "price": 11.50, "momentum_30d":  6.2, "volatility_30d": 1.8, "above_ma60": True,  "score": 0.72},
+        {"ticker": "SOFI", "price": 8.90,  "momentum_30d":  9.1, "volatility_30d": 2.4, "above_ma60": True,  "score": 0.68},
+        {"ticker": "T",    "price": 18.40, "momentum_30d":  3.3, "volatility_30d": 0.9, "above_ma60": True,  "score": 0.65},
+        {"ticker": "NOK",  "price": 4.20,  "momentum_30d":  2.8, "volatility_30d": 1.1, "above_ma60": False, "score": 0.61},
+    ]
+    picks = []
+    for s in raw:
+        if s["price"] <= budget:
+            s["shares"] = int(budget // s["price"])
+            s["sparkline"] = [round(s["price"] * (1 + np.random.uniform(-0.02, 0.02)), 2) for _ in range(30)]
+            picks.append(s)
+    return sorted(picks, key=lambda x: x["score"], reverse=True)
+
+
 @app.route("/")
 def index():
     maybe_refresh()
@@ -129,7 +133,6 @@ def recommend():
         data = _cache["data"]
 
     if not ready or not data:
-        # still loading — return demo with a flag so frontend can show a message
         return jsonify({"demo": True, "loading": True, "budget": budget, "stocks": demo_stocks(budget)})
 
     picks = score_stocks(data, budget)
@@ -147,27 +150,10 @@ def health():
         count = len(_cache["data"]) if _cache["data"] else 0
     return jsonify({
         "status": "ok",
-        "data_source": "yfinance",
         "cache_ready": ready,
         "tickers_loaded": count,
         "cache_age_s": round(time.time() - ts) if ts else None
     })
-
-
-def demo_stocks(budget: float) -> list[dict]:
-    raw = [
-        {"ticker": "F",    "price": 11.50, "momentum_30d":  6.2, "volatility_30d": 1.8, "above_ma60": True,  "score": 0.72},
-        {"ticker": "SOFI", "price": 8.90,  "momentum_30d":  9.1, "volatility_30d": 2.4, "above_ma60": True,  "score": 0.68},
-        {"ticker": "T",    "price": 18.40, "momentum_30d":  3.3, "volatility_30d": 0.9, "above_ma60": True,  "score": 0.65},
-        {"ticker": "NOK",  "price": 4.20,  "momentum_30d":  2.8, "volatility_30d": 1.1, "above_ma60": False, "score": 0.61},
-    ]
-    picks = []
-    for s in raw:
-        if s["price"] <= budget:
-            s["shares"] = int(budget // s["price"])
-            s["sparkline"] = [round(s["price"] * (1 + np.random.uniform(-0.02, 0.02)), 2) for _ in range(30)]
-            picks.append(s)
-    return sorted(picks, key=lambda x: x["score"], reverse=True)
 
 
 if __name__ == "__main__":
