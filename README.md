@@ -90,4 +90,4 @@ trend     = 1.0 if price ≥ MA60, else 0.5 if price ≥ MA60×0.98, else 0.0
 
 ## Disclaimer
 
-⚠️ This is an educational project for ISYE class purposes only. Not financial advice. Do not make real investment decisions based on this app.
+⚠️ This is an educational project Not financial advice. Do not make real investment decisions based on this app.
