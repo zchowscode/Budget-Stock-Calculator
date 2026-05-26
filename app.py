@@ -22,10 +22,19 @@ _lock = threading.Lock()
 
 def fetch_all():
     """Fetch tickers in background and populate cache."""
+    # Set a browser-like User-Agent so Yahoo Finance doesn't block us
+    yf.utils.get_json.__globals__.get('requests', __import__('requests'))
+    import requests
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
+
     data = {}
     for ticker in TICKERS:
         try:
-            hist = yf.Ticker(ticker).history(period="3mo", interval="1d", auto_adjust=True)
+            t = yf.Ticker(ticker, session=session)
+            hist = t.history(period="3mo", interval="1d", auto_adjust=True)
             if hist.empty or len(hist) < 20:
                 continue
             closes = hist["Close"].values.astype("float32")
