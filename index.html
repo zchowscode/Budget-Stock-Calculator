@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BudgetStock — Smart Picks for Any Budget</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg:      #080608;
+      --surface: #0f0d10;
+      --border:  #1f1b22;
+      --red:     #e8273a;
+      --red-dim: #7a0f1c;
+      --red-glow:#e8273a22;
+      --text:    #f0eaf2;
+      --muted:   #5c5460;
+      --card:    #100e12;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Space Grotesk', sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── animated stock lines canvas bg ── */
+    #bg-canvas {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      opacity: 0.18;
+      pointer-events: none;
+    }
+
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 0 1.5rem 5rem;
+    }
+
+    /* ── header ── */
+    header { padding: 3.5rem 0 2rem; }
+
+    .eyebrow {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .68rem;
+      letter-spacing: .18em;
+      color: var(--red);
+      text-transform: uppercase;
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      margin-bottom: 1rem;
+    }
+    .eyebrow::before {
+      content: '';
+      display: inline-block;
+      width: 6px; height: 6px;
+      background: var(--red);
+      border-radius: 50%;
+      animation: blink 1.6s infinite;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.2} }
+
+    h1 {
+      font-size: clamp(2.8rem, 7vw, 4.4rem);
+      font-weight: 700;
+      line-height: 1.0;
+      letter-spacing: -.03em;
+      margin-bottom: .8rem;
+    }
+    h1 em {
+      font-style: normal;
+      color: var(--red);
+      position: relative;
+    }
+    h1 em::after {
+      content: '';
+      position: absolute;
+      left: 0; right: 0;
+      bottom: 2px;
+      height: 2px;
+      background: var(--red);
+      opacity: .4;
+    }
+
+    .sub {
+      color: var(--muted);
+      font-size: .95rem;
+      line-height: 1.65;
+      max-width: 440px;
+      font-weight: 400;
+    }
+
+    /* ── input row ── */
+    .input-row {
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+      margin: 2.5rem 0 2rem;
+      flex-wrap: wrap;
+    }
+
+    .lbl {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .72rem;
+      color: var(--muted);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    .inp-wrap {
+      display: flex;
+      align-items: center;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0 .75rem;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .inp-wrap:focus-within {
+      border-color: var(--red-dim);
+      box-shadow: 0 0 0 3px var(--red-glow);
+    }
+
+    .dollar {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1rem;
+      color: var(--red);
+    }
+
+    #budget-input {
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1.15rem;
+      font-weight: 500;
+      width: 90px;
+      padding: .7rem .3rem;
+    }
+    #budget-input::placeholder { color: var(--muted); }
+
+    #go-btn {
+      background: var(--red);
+      color: #fff;
+      border: none;
+      padding: .72rem 1.4rem;
+      font-family: 'Space Grotesk', sans-serif;
+      font-weight: 700;
+      font-size: .88rem;
+      border-radius: 8px;
+      cursor: pointer;
+      letter-spacing: .04em;
+      transition: filter .15s, transform .1s;
+    }
+    #go-btn:hover  { filter: brightness(1.15); }
+    #go-btn:active { transform: scale(.96); }
+    #go-btn:disabled { opacity: .35; cursor: not-allowed; filter: none; }
+
+    /* ── demo banner ── */
+    #demo-banner {
+      display: none;
+      background: #180a0b;
+      border: 1px solid #3d1418;
+      border-radius: 6px;
+      padding: .65rem .9rem;
+      font-size: .78rem;
+      font-family: 'JetBrains Mono', monospace;
+      color: #c06068;
+      margin-bottom: 1.5rem;
+    }
+    #demo-banner.on { display: block; }
+
+    /* ── section heading ── */
+    .sec-head {
+      display: flex;
+      align-items: center;
+      gap: .6rem;
+      margin-bottom: 1rem;
+    }
+    .sec-head h2 {
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .sec-head .ct {
+      font-size: .72rem;
+      color: var(--muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* ── cards ── */
+    #results { display: flex; flex-direction: column; gap: .65rem; }
+
+    .scard {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.1rem 1.3rem;
+      display: grid;
+      grid-template-columns: 28px 1fr auto;
+      gap: .9rem;
+      align-items: center;
+      transition: border-color .2s;
+      animation: pop .35s cubic-bezier(.22,.68,0,1.2) both;
+    }
+    .scard:hover { border-color: var(--red-dim); }
+    @keyframes pop {
+      from { opacity: 0; transform: translateY(10px) scale(.98); }
+      to   { opacity: 1; transform: none; }
+    }
+
+    .rnk {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .68rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    .rnk.hot { color: var(--red); font-weight: 500; }
+
+    .cmain { display: flex; flex-direction: column; gap: .45rem; }
+
+    .ctop {
+      display: flex;
+      align-items: center;
+      gap: .6rem;
+      flex-wrap: wrap;
+    }
+
+    .tkr {
+      font-size: 1.1rem;
+      font-weight: 700;
+      letter-spacing: .06em;
+    }
+
+    .prc {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .82rem;
+      color: #a09aaa;
+    }
+
+    .pill {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .65rem;
+      padding: .18rem .45rem;
+      border-radius: 4px;
+    }
+    .pill.up   { background: rgba(232,39,58,.14); color: #e8273a; }
+    .pill.dn   { background: rgba(120,80,90,.15);  color: #a06070; }
+    .pill.ma   { background: rgba(160,130,200,.1); color: #a090c8; }
+
+    .cmeta {
+      display: flex;
+      gap: 1.4rem;
+      flex-wrap: wrap;
+    }
+    .mi { font-size: .76rem; color: var(--muted); }
+    .mi strong { color: var(--text); font-weight: 600; }
+
+    /* right: sparkline + ring */
+    .cright {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: .45rem;
+    }
+
+    .sring {
+      width: 44px; height: 44px;
+      position: relative;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .sring svg { position: absolute; inset: 0; transform: rotate(-90deg); }
+    .sring .snum {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .7rem;
+      color: var(--red);
+      position: relative; z-index: 1;
+    }
+
+    /* ── loading + empty ── */
+    #loading {
+      display: none;
+      align-items: center;
+      gap: .6rem;
+      padding: 2rem 0;
+      color: var(--muted);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .8rem;
+    }
+    #loading.on { display: flex; }
+
+    .spin {
+      width: 16px; height: 16px;
+      border: 2px solid var(--border);
+      border-top-color: var(--red);
+      border-radius: 50%;
+      animation: rot .7s linear infinite;
+    }
+    @keyframes rot { to { transform: rotate(360deg); } }
+
+    #empty { display: none; padding: 2rem 0; color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: .8rem; }
+    #empty.on { display: block; }
+
+    footer {
+      margin-top: 4rem;
+      padding-top: 1.2rem;
+      border-top: 1px solid var(--border);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .7rem;
+      color: var(--muted);
+      line-height: 1.8;
+    }
+  </style>
+</head>
+<body>
+
+<canvas id="bg-canvas"></canvas>
+
+<div class="container">
+  <header>
+    <div class="eyebrow">Live Analysis</div>
+    <h1>Best stocks<br>for your <em>budget.</em></h1>
+    <p class="sub">Enter how much you have to invest. We score every stock by momentum, safety, and trend — and show you exactly what you can buy.</p>
+  </header>
+
+  <div class="input-row">
+    <span class="lbl">Your budget</span>
+    <div class="inp-wrap">
+      <span class="dollar">$</span>
+      <input id="budget-input" type="number" min="1" max="10000" value="50" placeholder="50" />
+    </div>
+    <button id="go-btn" onclick="fetchStocks()">Analyze →</button>
+  </div>
+
+  <div id="demo-banner">⚠ Demo mode — add your Kaggle CSV to /data/stocks.csv for real data.</div>
+
+  <div id="loading"><div class="spin"></div>Scoring stocks…</div>
+  <div id="empty"></div>
+
+  <div id="results-wrap" style="display:none">
+    <div class="sec-head">
+      <h2>Top Picks</h2>
+      <span class="ct" id="ct"></span>
+    </div>
+    <div id="results"></div>
+  </div>
+
+  <footer>
+    <p>⚠ Not financial advice. Educational portfolio project only.</p>
+    <p>Data: Kaggle S&P 500 · Scoring: 40% momentum + 35% safety + 25% trend</p>
+  </footer>
+</div>
+
+<script>
+// ── Animated background stock lines ──────────────────────────────────────────
+(function() {
+  const canvas = document.getElementById('bg-canvas');
+  const ctx = canvas.getContext('2d');
+  const RED = '#e8273a';
+  const DIM = '#3a1520';
+  const NUM_LINES = 7;
+
+  function resize() {
+    canvas.width  = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  // Each line: a slowly scrolling stock-like path
+  const lines = Array.from({ length: NUM_LINES }, (_, i) => {
+    const y = 80 + (window.innerHeight / (NUM_LINES + 1)) * (i + 1);
+    const pts = [];
+    for (let x = -200; x < window.innerWidth + 400; x += 18) {
+      pts.push({ x, y: y + (Math.random() - .5) * 60 });
+    }
+    return {
+      pts,
+      speed: 0.18 + Math.random() * 0.22,
+      offset: 0,
+      hot: i === 1 || i === 4,
+    };
+  });
+
+  // Wiggle points slightly each frame
+  let frame = 0;
+  function tick() {
+    frame++;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    lines.forEach(line => {
+      line.offset += line.speed;
+      // shift points left
+      if (line.offset > 18) {
+        line.offset -= 18;
+        line.pts.shift();
+        const last = line.pts[line.pts.length - 1];
+        line.pts.push({ x: last.x + 18, y: last.y + (Math.random() - .48) * 30 });
+        // clamp y drift
+        const base = line.pts[0].y;
+        line.pts.forEach(p => { p.y = p.y * 0.995 + base * 0.005; });
+      }
+
+      ctx.save();
+      ctx.translate(-line.offset, 0);
+      ctx.beginPath();
+
+      const pts = line.pts;
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length - 1; i++) {
+        const mx = (pts[i].x + pts[i + 1].x) / 2;
+        const my = (pts[i].y + pts[i + 1].y) / 2;
+        ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+      }
+
+      ctx.strokeStyle = line.hot ? RED : DIM;
+      ctx.lineWidth   = line.hot ? 1.5 : 1;
+      ctx.stroke();
+
+      // tiny dot at the leading visible edge
+      const visible = pts.find(p => p.x - line.offset > 40);
+      if (visible && line.hot) {
+        ctx.beginPath();
+        ctx.arc(visible.x, visible.y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = RED;
+        ctx.fill();
+      }
+
+      ctx.restore();
+    });
+
+    requestAnimationFrame(tick);
+  }
+  tick();
+})();
+
+// ── Sparkline ────────────────────────────────────────────────────────────────
+function drawSpark(el, data) {
+  const up = data[data.length - 1] >= data[0];
+  const color = up ? '#e8273a' : '#5a3040';
+  new Chart(el.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: data.map((_, i) => i),
+      datasets: [{ data, borderColor: color, borderWidth: 1.5, pointRadius: 0, tension: 0.4,
+        fill: true,
+        backgroundColor: ctx2 => {
+          const g = ctx2.chart.ctx.createLinearGradient(0, 0, 0, 40);
+          g.addColorStop(0, color + '44');
+          g.addColorStop(1, color + '00');
+          return g;
+        }
+      }]
+    },
+    options: {
+      responsive: false, animation: false,
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      scales: { x: { display: false }, y: { display: false } }
+    }
+  });
+}
+
+// ── Score ring ────────────────────────────────────────────────────────────────
+function ringHTML(score) {
+  const p = Math.max(0, Math.min(1, score));
+  const r = 18, c = 2 * Math.PI * r;
+  return `<div class="sring">
+    <svg width="44" height="44" viewBox="0 0 44 44">
+      <circle cx="22" cy="22" r="${r}" fill="none" stroke="#1f1b22" stroke-width="3"/>
+      <circle cx="22" cy="22" r="${r}" fill="none" stroke="#e8273a" stroke-width="3"
+        stroke-dasharray="${(p*c).toFixed(1)} ${c.toFixed(1)}" stroke-linecap="round"/>
+    </svg>
+    <span class="snum">${Math.round(p*100)}</span>
+  </div>`;
+}
+
+// ── Build card ────────────────────────────────────────────────────────────────
+function buildCard(s, rank) {
+  const up = s.momentum_30d >= 0;
+  const card = document.createElement('div');
+  card.className = 'scard';
+  card.style.animationDelay = (rank * 55) + 'ms';
+  card.innerHTML = `
+    <span class="rnk ${rank <= 3 ? 'hot' : ''}">#${rank}</span>
+    <div class="cmain">
+      <div class="ctop">
+        <span class="tkr">${s.ticker}</span>
+        <span class="prc">$${s.price.toFixed(2)}</span>
+        <span class="pill ${up ? 'up' : 'dn'}">${up ? '+' : ''}${s.momentum_30d.toFixed(1)}% 30d</span>
+        ${s.above_ma60 ? '<span class="pill ma">↑ MA60</span>' : ''}
+      </div>
+      <div class="cmeta">
+        <span class="mi">Shares: <strong>${s.shares}</strong></span>
+        <span class="mi">Volatility: <strong>${s.volatility_30d.toFixed(2)}%</strong></span>
+        <span class="mi">Score: <strong>${(s.score*100).toFixed(0)}/100</strong></span>
+      </div>
+    </div>
+    <div class="cright">
+      ${ringHTML(s.score)}
+      <canvas width="88" height="38" data-sp></canvas>
+    </div>`;
+  if (s.sparkline?.length) drawSpark(card.querySelector('[data-sp]'), s.sparkline);
+  return card;
+}
+
+// ── Fetch ─────────────────────────────────────────────────────────────────────
+async function fetchStocks() {
+  const budget = parseFloat(document.getElementById('budget-input').value) || 50;
+  const btn     = document.getElementById('go-btn');
+  const loading = document.getElementById('loading');
+  const empty   = document.getElementById('empty');
+  const wrap    = document.getElementById('results-wrap');
+  const results = document.getElementById('results');
+  const banner  = document.getElementById('demo-banner');
+
+  btn.disabled = true;
+  loading.classList.add('on');
+  wrap.style.display = 'none';
+  empty.classList.remove('on');
+  banner.classList.remove('on');
+  results.innerHTML = '';
+
+  try {
+    const data = await fetch(`/api/recommend?budget=${budget}`).then(r => r.json());
+    loading.classList.remove('on');
+
+    if (data.demo) banner.classList.add('on');
+
+    if (!data.stocks?.length) {
+      empty.textContent = `No stocks found under $${budget}. Try a higher budget.`;
+      empty.classList.add('on');
+    } else {
+      document.getElementById('ct').textContent = `${data.stocks.length} picks · $${budget} budget`;
+      data.stocks.forEach((s, i) => results.appendChild(buildCard(s, i + 1)));
+      wrap.style.display = 'block';
+    }
+  } catch {
+    loading.classList.remove('on');
+    empty.textContent = 'Error — is the Flask server running?';
+    empty.classList.add('on');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  fetchStocks();
+  document.getElementById('budget-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') fetchStocks();
+  });
+});
+</script>
+</body>
+</html>
