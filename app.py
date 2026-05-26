@@ -1,79 +1,63 @@
 from flask import Flask, render_template, jsonify, request
 from flask_cors import CORS
 import yfinance as yf
-import pandas as pd
 import numpy as np
 import os
+import time
 
 app = Flask(__name__)
 CORS(app)
 
-# ── S&P 500 tickers to scan ───────────────────────────────────────────────────
 TICKERS = [
-    "AAPL","MSFT","GOOGL","AMZN","NVDA","META","TSLA","BRK-B","JPM","JNJ",
-    "V","UNH","XOM","PG","MA","HD","CVX","MRK","ABBV","PEP","KO","AVGO",
-    "COST","MCD","WMT","BAC","LLY","TMO","ACN","CSCO","ABT","DHR","TXN",
-    "NEE","PM","RTX","UPS","AMGN","QCOM","HON","LOW","MS","SPGI","GS",
-    "CAT","BLK","INTU","ISRG","AXP","SYK","GILD","ADI","MDLZ","VRTX",
-    "REGN","ZTS","MMC","CB","SO","DUK","CI","ELV","CVS","WBA","T","VZ",
-    "CMCSA","NFLX","INTC","AMD","MU","F","GM","GE","BA","LMT","NOC",
-    "WFC","USB","PNC","TFC","COF","AIG","MET","PRU","AFL","ALL",
-    "NKE","SBUX","TGT","DIS","PYPL","SQ","UBER","LYFT","SNAP","PINS",
-    "SOFI","NOK","PLTR","RIVN","LCID","AAL","DAL","UAL","CCL","RCL"
+    "AAPL","MSFT","GOOGL","AMZN","NVDA","META","TSLA","JPM","JNJ","V",
+    "XOM","PG","KO","PEP","WMT","BAC","T","VZ","F","GM",
+    "INTC","AMD","CSCO","NFLX","DIS","NKE","SBUX","TGT","PYPL","SOFI"
 ]
 
 _cache = {}
 
-def load_data(budget: float):
-    """Fetch 3 months of daily closes for all tickers via yfinance."""
+def load_data():
     global _cache
-    import time
     now = time.time()
-    # Cache for 1 hour
-    if _cache.get("ts") and now - _cache["ts"] < 3600 and _cache.get("df") is not None:
-        return _cache["df"]
+    if _cache.get("ts") and now - _cache["ts"] < 3600 and _cache.get("data"):
+        return _cache["data"]
 
-    try:
-        raw = yf.download(
-            TICKERS,
-            period="3mo",
-            interval="1d",
-            progress=False,
-            threads=True
-        )
-        # yfinance returns MultiIndex columns (field, ticker)
-        closes = raw["Close"] if "Close" in raw.columns.get_level_values(0) else raw["Adj Close"]
-        _cache["df"] = closes
-        _cache["ts"] = now
-        return closes
-    except Exception as e:
-        print(f"yfinance error: {e}")
-        return None
-
-
-def score_stocks(closes: pd.DataFrame, budget: float) -> list[dict]:
-    results = []
-
-    for ticker in closes.columns:
-        series = closes[ticker].dropna()
-        if len(series) < 60:
+    data = {}
+    for ticker in TICKERS:
+        try:
+            hist = yf.Ticker(ticker).history(period="3mo", interval="1d", auto_adjust=True)
+            if hist.empty or len(hist) < 60:
+                continue
+            # only store the Close array — nothing else
+            data[ticker] = hist["Close"].values[-90:].astype("float32")
+        except Exception:
             continue
 
-        latest_price = float(series.iloc[-1])
+    if not data:
+        return None
+
+    _cache["data"] = data
+    _cache["ts"] = now
+    return data
+
+
+def score_stocks(data: dict, budget: float) -> list[dict]:
+    results = []
+
+    for ticker, prices in data.items():
+        if len(prices) < 60:
+            continue
+
+        latest_price = float(prices[-1])
         if latest_price > budget or latest_price <= 0:
             continue
 
-        prices = series.values
-
-        # Momentum: 30-day return
         momentum = (prices[-1] - prices[-30]) / prices[-30] if prices[-30] > 0 else 0
 
-        # Safety: inverse volatility
         daily_returns = np.diff(prices[-31:]) / prices[-31:-1]
         volatility = float(np.std(daily_returns)) if len(daily_returns) > 0 else 1
         safety = 1 / (1 + volatility * 100)
 
-        # Trend: vs 60-day MA
         ma60 = float(np.mean(prices[-60:]))
         if latest_price >= ma60:
             trend = 1.0
@@ -84,7 +68,7 @@ def score_stocks(closes: pd.DataFrame, budget: float) -> list[dict]:
 
         raw_score = 0.40 * momentum + 0.35 * safety + 0.25 * trend
         shares = int(budget // latest_price)
-        spark = [round(p, 2) for p in prices[-30:].tolist()]
+        spark = [round(float(p), 2) for p in prices[-30:]]
 
         results.append({
             "ticker": ticker,
@@ -101,8 +85,6 @@ def score_stocks(closes: pd.DataFrame, budget: float) -> list[dict]:
     return results[:10]
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
-
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -116,11 +98,11 @@ def recommend():
     except ValueError:
         return jsonify({"error": "Invalid budget"}), 400
 
-    closes = load_data(budget)
-    if closes is None:
+    data = load_data()
+    if not data:
         return jsonify({"demo": True, "budget": budget, "stocks": demo_stocks(budget)})
 
-    picks = score_stocks(closes, budget)
+    picks = score_stocks(data, budget)
     if not picks:
         return jsonify({"demo": True, "budget": budget, "stocks": demo_stocks(budget)})
 
