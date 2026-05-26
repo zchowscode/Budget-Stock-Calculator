@@ -9,12 +9,11 @@ import requests
 app = Flask(__name__)
 CORS(app)
 
-API_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "")
+API_KEY = os.environ.get("POLYGON_KEY", "")
 
 TICKERS = [
-    "F", "T", "VZ", "INTC", "BAC", "AMD", "CSCO",
-    "KO", "PEP", "WMT", "NKE", "SBUX", "DIS",
-    "AAPL", "MSFT", "GOOGL", "NVDA", "META", "TSLA", "JPM"
+    "F", "T", "BAC", "AMD", "KO", "WMT",
+    "AAPL", "NVDA", "MSFT", "TSLA", "JPM", "NKE"
 ]
 
 _cache = {"data": None, "ts": 0, "ready": False}
@@ -22,26 +21,25 @@ _lock = threading.Lock()
 
 
 def fetch_ticker(ticker):
-    """Fetch daily closes for one ticker from Alpha Vantage."""
+    """Fetch last 65 daily closes from Polygon.io."""
     try:
-        url = "https://www.alphavantage.co/query"
+        from datetime import date, timedelta
+        end = date.today().isoformat()
+        start = (date.today() - timedelta(days=100)).isoformat()
+        url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
         params = {
-            "function": "TIME_SERIES_DAILY",
-            "symbol": ticker,
-            "outputsize": "compact",  # last 100 days
-            "apikey": API_KEY,
+            "adjusted": "true",
+            "sort": "asc",
+            "limit": 65,
+            "apiKey": API_KEY,
         }
         r = requests.get(url, params=params, timeout=15)
         j = r.json()
-
-        ts = j.get("Time Series (Daily)", {})
-        if not ts:
-            print(f"[cache] no data for {ticker}: {list(j.keys())}", flush=True)
+        results = j.get("results", [])
+        if not results:
+            print(f"[cache] no data for {ticker}: {j.get('status')} {j.get('error','')}", flush=True)
             return None
-
-        # Sort by date ascending, take last 65 days
-        dates = sorted(ts.keys())[-65:]
-        closes = np.array([float(ts[d]["4. close"]) for d in dates], dtype="float32")
+        closes = np.array([float(bar["c"]) for bar in results], dtype="float32")
         return closes
     except Exception as e:
         print(f"[cache] error {ticker}: {e}", flush=True)
@@ -49,20 +47,15 @@ def fetch_ticker(ticker):
 
 
 def fetch_all():
-    """Fetch all tickers in background. Alpha Vantage free = 25 req/day, 5/min."""
     data = {}
-    for i, ticker in enumerate(TICKERS):
+    for ticker in TICKERS:
         closes = fetch_ticker(ticker)
         if closes is not None and len(closes) >= 20:
             data[ticker] = closes
             print(f"[cache] got {ticker} ({len(closes)} days)", flush=True)
         else:
             print(f"[cache] skipped {ticker}", flush=True)
-
-        # Alpha Vantage free tier: max 5 requests/minute
-        # Sleep 13s between each to stay safe
-        if i < len(TICKERS) - 1:
-            time.sleep(13)
+        time.sleep(0.3)  # gentle pacing
 
     with _lock:
         if data:
@@ -82,7 +75,6 @@ def maybe_refresh():
         threading.Thread(target=fetch_all, daemon=True).start()
 
 
-# Start fetching at startup
 threading.Thread(target=fetch_all, daemon=True).start()
 
 
@@ -128,10 +120,10 @@ def score_stocks(data: dict, budget: float) -> list:
 
 def demo_stocks(budget: float) -> list:
     raw = [
-        {"ticker": "F",    "price": 11.50, "momentum_30d":  6.2, "volatility_30d": 1.8, "above_ma60": True,  "score": 0.72},
-        {"ticker": "SOFI", "price": 8.90,  "momentum_30d":  9.1, "volatility_30d": 2.4, "above_ma60": True,  "score": 0.68},
-        {"ticker": "T",    "price": 18.40, "momentum_30d":  3.3, "volatility_30d": 0.9, "above_ma60": True,  "score": 0.65},
-        {"ticker": "NOK",  "price": 4.20,  "momentum_30d":  2.8, "volatility_30d": 1.1, "above_ma60": False, "score": 0.61},
+        {"ticker": "F",   "price": 11.50, "momentum_30d":  6.2, "volatility_30d": 1.8, "above_ma60": True,  "score": 0.72},
+        {"ticker": "T",   "price": 18.40, "momentum_30d":  3.3, "volatility_30d": 0.9, "above_ma60": True,  "score": 0.65},
+        {"ticker": "BAC", "price": 38.00, "momentum_30d":  4.1, "volatility_30d": 1.2, "above_ma60": True,  "score": 0.63},
+        {"ticker": "KO",  "price": 62.00, "momentum_30d":  2.8, "volatility_30d": 0.7, "above_ma60": False, "score": 0.61},
     ]
     picks = []
     for s in raw:
