@@ -3,4 +3,4 @@ flask-cors==4.0.1
 pandas==2.2.2
 numpy==1.26.4
 gunicorn==22.0.0
-kagglehub==0.3.4
+yfinance==0.2.54
