@@ -18,63 +18,72 @@ TICKERS = [
 
 _cache = {"data": None, "ts": 0, "ready": False}
 _lock = threading.Lock()
+_fetching = False  # GUARD: prevents duplicate threads
 
 
 def fetch_ticker(ticker):
-    """Fetch last 65 daily closes from Polygon.io."""
     try:
         from datetime import date, timedelta
         end = date.today().isoformat()
         start = (date.today() - timedelta(days=100)).isoformat()
         url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
-        params = {
-            "adjusted": "true",
-            "sort": "asc",
-            "limit": 65,
-            "apiKey": API_KEY,
-        }
+        params = {"adjusted": "true", "sort": "asc", "limit": 65, "apiKey": API_KEY}
         r = requests.get(url, params=params, timeout=15)
         j = r.json()
         results = j.get("results", [])
         if not results:
             print(f"[cache] no data for {ticker}: {j.get('status')} {j.get('error','')}", flush=True)
             return None
-        closes = np.array([float(bar["c"]) for bar in results], dtype="float32")
-        return closes
+        return np.array([float(bar["c"]) for bar in results], dtype="float32")
     except Exception as e:
         print(f"[cache] error {ticker}: {e}", flush=True)
         return None
 
 
 def fetch_all():
-    data = {}
-    for ticker in TICKERS:
-        closes = fetch_ticker(ticker)
-        if closes is not None and len(closes) >= 20:
-            data[ticker] = closes
-            print(f"[cache] got {ticker} ({len(closes)} days)", flush=True)
-        else:
-            print(f"[cache] skipped {ticker}", flush=True)
-        time.sleep(13)  # Polygon free tier = 5 req/min
-
+    global _fetching
+    # Only one thread allowed at a time
     with _lock:
-        if data:
-            _cache["data"] = data
-            _cache["ts"] = time.time()
-            _cache["ready"] = True
-            print(f"[cache] loaded {len(data)} tickers", flush=True)
-        else:
-            print("[cache] no data fetched", flush=True)
+        if _fetching:
+            print("[cache] already fetching, skipping", flush=True)
+            return
+        _fetching = True
+
+    try:
+        data = {}
+        for ticker in TICKERS:
+            closes = fetch_ticker(ticker)
+            if closes is not None and len(closes) >= 20:
+                data[ticker] = closes
+                print(f"[cache] got {ticker} ({len(closes)} days)", flush=True)
+            else:
+                print(f"[cache] skipped {ticker}", flush=True)
+            time.sleep(13)  # 5 req/min = 1 per 12s, 13s to be safe
+
+        with _lock:
+            if data:
+                _cache["data"] = data
+                _cache["ts"] = time.time()
+                _cache["ready"] = True
+                print(f"[cache] loaded {len(data)} tickers", flush=True)
+            else:
+                print("[cache] no data fetched", flush=True)
+    finally:
+        with _lock:
+            _fetching = False
 
 
 def maybe_refresh():
+    global _fetching
     with _lock:
         age = time.time() - _cache["ts"]
         ready = _cache["ready"]
-    if not ready or age > 3600:
+        already = _fetching
+    if not already and (not ready or age > 3600):
         threading.Thread(target=fetch_all, daemon=True).start()
 
 
+# Start background fetch on boot — only once
 threading.Thread(target=fetch_all, daemon=True).start()
 
 
@@ -89,7 +98,7 @@ def score_stocks(data: dict, budget: float) -> list:
 
         lookback = min(30, len(prices))
         start_price = float(prices[-lookback])
-        momentum = (float(prices[-1]) - start_price) / start_price if start_price > 0 else 0
+        momentum = (latest_price - start_price) / start_price if start_price > 0 else 0
 
         daily_returns = np.diff(prices[-lookback:]) / prices[-lookback:-1]
         volatility = float(np.std(daily_returns)) if len(daily_returns) > 0 else 1
