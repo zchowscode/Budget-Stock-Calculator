@@ -18,7 +18,7 @@ TICKERS = [
 
 _cache = {"data": None, "ts": 0, "ready": False}
 _lock = threading.Lock()
-_fetching = False  # GUARD: prevents duplicate threads
+_fetching = False
 
 
 def fetch_ticker(ticker):
@@ -28,11 +28,13 @@ def fetch_ticker(ticker):
         start = (date.today() - timedelta(days=100)).isoformat()
         url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
         params = {"adjusted": "true", "sort": "asc", "limit": 65, "apiKey": API_KEY}
+        print(f"[fetch] requesting {ticker}...", flush=True)
         r = requests.get(url, params=params, timeout=15)
+        print(f"[fetch] {ticker} status={r.status_code}", flush=True)
         j = r.json()
         results = j.get("results", [])
         if not results:
-            print(f"[cache] no data for {ticker}: {j.get('status')} {j.get('error','')}", flush=True)
+            print(f"[cache] no data for {ticker}: {j}", flush=True)
             return None
         return np.array([float(bar["c"]) for bar in results], dtype="float32")
     except Exception as e:
@@ -42,7 +44,8 @@ def fetch_ticker(ticker):
 
 def fetch_all():
     global _fetching
-    # Only one thread allowed at a time
+    print("[cache] fetch_all started", flush=True)
+    print(f"[cache] API_KEY set: {bool(API_KEY)}", flush=True)
     with _lock:
         if _fetching:
             print("[cache] already fetching, skipping", flush=True)
@@ -58,7 +61,7 @@ def fetch_all():
                 print(f"[cache] got {ticker} ({len(closes)} days)", flush=True)
             else:
                 print(f"[cache] skipped {ticker}", flush=True)
-            time.sleep(13)  # 5 req/min = 1 per 12s, 13s to be safe
+            time.sleep(13)
 
         with _lock:
             if data:
@@ -68,6 +71,8 @@ def fetch_all():
                 print(f"[cache] loaded {len(data)} tickers", flush=True)
             else:
                 print("[cache] no data fetched", flush=True)
+    except Exception as e:
+        print(f"[cache] fetch_all crashed: {e}", flush=True)
     finally:
         with _lock:
             _fetching = False
@@ -83,7 +88,7 @@ def maybe_refresh():
         threading.Thread(target=fetch_all, daemon=True).start()
 
 
-# Start background fetch on boot — only once
+print("[startup] launching background fetch thread", flush=True)
 threading.Thread(target=fetch_all, daemon=True).start()
 
 
