@@ -4,67 +4,81 @@ import yfinance as yf
 import numpy as np
 import os
 import time
+import threading
 
 app = Flask(__name__)
 CORS(app)
 
+# Fewer tickers = faster load, still covers a good range of price points
 TICKERS = [
-    "AAPL","MSFT","GOOGL","AMZN","NVDA","META","TSLA","JPM","JNJ","V",
-    "XOM","PG","KO","PEP","WMT","BAC","T","VZ","F","GM",
-    "INTC","AMD","CSCO","NFLX","DIS","NKE","SBUX","TGT","PYPL","SOFI"
+    "F", "T", "VZ", "INTC", "BAC", "AMD", "CSCO",
+    "KO", "PEP", "WMT", "NKE", "SBUX", "DIS",
+    "AAPL", "MSFT", "GOOGL", "NVDA", "META", "TSLA", "JPM"
 ]
 
-_cache = {}
+_cache = {"data": None, "ts": 0, "ready": False}
+_lock = threading.Lock()
 
-def load_data():
-    global _cache
-    now = time.time()
-    if _cache.get("ts") and now - _cache["ts"] < 3600 and _cache.get("data"):
-        return _cache["data"]
 
+def fetch_all():
+    """Fetch tickers in background and populate cache."""
     data = {}
     for ticker in TICKERS:
         try:
             hist = yf.Ticker(ticker).history(period="3mo", interval="1d", auto_adjust=True)
-            if hist.empty or len(hist) < 60:
+            if hist.empty or len(hist) < 20:
                 continue
-            # only store the Close array — nothing else
-            data[ticker] = hist["Close"].values[-90:].astype("float32")
+            closes = hist["Close"].values.astype("float32")
+            data[ticker] = closes
         except Exception:
             continue
+        time.sleep(0.3)  # gentle pacing to avoid rate limits
 
-    if not data:
-        return None
+    with _lock:
+        if data:
+            _cache["data"] = data
+            _cache["ts"] = time.time()
+            _cache["ready"] = True
+            print(f"[cache] loaded {len(data)} tickers", flush=True)
+        else:
+            print("[cache] no data fetched — will retry on next request", flush=True)
 
-    _cache["data"] = data
-    _cache["ts"] = now
-    return data
+
+def maybe_refresh():
+    """Trigger background refresh if cache is stale (>1 hour)."""
+    now = time.time()
+    with _lock:
+        age = now - _cache["ts"]
+        ready = _cache["ready"]
+    if not ready or age > 3600:
+        t = threading.Thread(target=fetch_all, daemon=True)
+        t.start()
+
+
+# Kick off background fetch immediately at startup
+threading.Thread(target=fetch_all, daemon=True).start()
 
 
 def score_stocks(data: dict, budget: float) -> list[dict]:
     results = []
-
     for ticker, prices in data.items():
-        if len(prices) < 60:
+        if len(prices) < 20:
             continue
-
         latest_price = float(prices[-1])
         if latest_price > budget or latest_price <= 0:
             continue
 
-        momentum = (prices[-1] - prices[-30]) / prices[-30] if prices[-30] > 0 else 0
+        lookback = min(30, len(prices))
+        start_price = float(prices[-lookback])
+        momentum = (float(prices[-1]) - start_price) / start_price if start_price > 0 else 0
 
-        daily_returns = np.diff(prices[-31:]) / prices[-31:-1]
+        daily_returns = np.diff(prices[-lookback:]) / prices[-lookback:-1]
         volatility = float(np.std(daily_returns)) if len(daily_returns) > 0 else 1
         safety = 1 / (1 + volatility * 100)
 
-        ma60 = float(np.mean(prices[-60:]))
-        if latest_price >= ma60:
-            trend = 1.0
-        elif latest_price >= ma60 * 0.98:
-            trend = 0.5
-        else:
-            trend = 0.0
+        ma_window = min(60, len(prices))
+        ma = float(np.mean(prices[-ma_window:]))
+        trend = 1.0 if latest_price >= ma else (0.5 if latest_price >= ma * 0.98 else 0.0)
 
         raw_score = 0.40 * momentum + 0.35 * safety + 0.25 * trend
         shares = int(budget // latest_price)
@@ -74,10 +88,10 @@ def score_stocks(data: dict, budget: float) -> list[dict]:
             "ticker": ticker,
             "price": round(latest_price, 2),
             "shares": shares,
-            "momentum_30d": round(float(momentum) * 100, 2),
-            "volatility_30d": round(float(volatility) * 100, 4),
+            "momentum_30d": round(momentum * 100, 2),
+            "volatility_30d": round(volatility * 100, 4),
             "above_ma60": trend == 1.0,
-            "score": round(float(raw_score), 4),
+            "score": round(raw_score, 4),
             "sparkline": spark,
         })
 
@@ -87,6 +101,7 @@ def score_stocks(data: dict, budget: float) -> list[dict]:
 
 @app.route("/")
 def index():
+    maybe_refresh()
     return render_template("index.html")
 
 
@@ -98,9 +113,15 @@ def recommend():
     except ValueError:
         return jsonify({"error": "Invalid budget"}), 400
 
-    data = load_data()
-    if not data:
-        return jsonify({"demo": True, "budget": budget, "stocks": demo_stocks(budget)})
+    maybe_refresh()
+
+    with _lock:
+        ready = _cache["ready"]
+        data = _cache["data"]
+
+    if not ready or not data:
+        # still loading — return demo with a flag so frontend can show a message
+        return jsonify({"demo": True, "loading": True, "budget": budget, "stocks": demo_stocks(budget)})
 
     picks = score_stocks(data, budget)
     if not picks:
@@ -111,21 +132,31 @@ def recommend():
 
 @app.route("/api/health")
 def health():
-    return jsonify({"status": "ok", "data_source": "yfinance"})
+    with _lock:
+        ready = _cache["ready"]
+        ts = _cache["ts"]
+        count = len(_cache["data"]) if _cache["data"] else 0
+    return jsonify({
+        "status": "ok",
+        "data_source": "yfinance",
+        "cache_ready": ready,
+        "tickers_loaded": count,
+        "cache_age_s": round(time.time() - ts) if ts else None
+    })
 
 
 def demo_stocks(budget: float) -> list[dict]:
     raw = [
         {"ticker": "F",    "price": 11.50, "momentum_30d":  6.2, "volatility_30d": 1.8, "above_ma60": True,  "score": 0.72},
         {"ticker": "SOFI", "price": 8.90,  "momentum_30d":  9.1, "volatility_30d": 2.4, "above_ma60": True,  "score": 0.68},
-        {"ticker": "NOK",  "price": 4.20,  "momentum_30d":  2.8, "volatility_30d": 1.1, "above_ma60": False, "score": 0.61},
         {"ticker": "T",    "price": 18.40, "momentum_30d":  3.3, "volatility_30d": 0.9, "above_ma60": True,  "score": 0.65},
+        {"ticker": "NOK",  "price": 4.20,  "momentum_30d":  2.8, "volatility_30d": 1.1, "above_ma60": False, "score": 0.61},
     ]
     picks = []
     for s in raw:
         if s["price"] <= budget:
             s["shares"] = int(budget // s["price"])
-            s["sparkline"] = [s["price"] * (1 + np.random.uniform(-0.02, 0.02)) for _ in range(30)]
+            s["sparkline"] = [round(s["price"] * (1 + np.random.uniform(-0.02, 0.02)), 2) for _ in range(30)]
             picks.append(s)
     return sorted(picks, key=lambda x: x["score"], reverse=True)
 
